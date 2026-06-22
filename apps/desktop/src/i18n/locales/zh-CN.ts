@@ -135,6 +135,10 @@ export default {
     imported: "已导入 {count} 个 SQL 文件",
     desktopOnly: "该功能仅桌面端可用",
     noConnection: "当前没有可用于导入的连接",
+    batchDelete: "批量删除",
+    batchDeleteConfirm: "确定要删除选中的 {count} 项吗？此操作无法撤销。",
+    batchDeleteSuccess: "成功删除 {count} 项",
+    clearSelection: "清除选择",
   },
 
   connection: {

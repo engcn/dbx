@@ -132,6 +132,10 @@ export default {
     imported: "Importati {count} file SQL",
     desktopOnly: "Questa funzione è disponibile solo su desktop",
     noConnection: "Nessuna connessione disponibile per l'importazione",
+    batchDelete: "Eliminazione in blocco",
+    batchDeleteConfirm: "Sei sicuro di voler eliminare {count} elementi selezionati? Questa azione non può essere annullata.",
+    batchDeleteSuccess: "{count} elementi eliminati con successo",
+    clearSelection: "Cancella selezione",
   },
 
   connection: {

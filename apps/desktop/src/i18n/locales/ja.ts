@@ -134,6 +134,10 @@ export default {
     imported: "{count}件のSQLファイルをインポートしました",
     desktopOnly: "この機能はデスクトップアプリでのみ利用可能です",
     noConnection: "インポートに利用可能な接続がありません",
+    batchDelete: "一括削除",
+    batchDeleteConfirm: "選択した {count} 項目を削除してもよろしいですか？この操作は元に戻せません。",
+    batchDeleteSuccess: "{count} 項目を削除しました",
+    clearSelection: "選択を解除",
   },
   connection: {
     title: "新しい接続",

@@ -339,13 +339,14 @@ function filesInFolder(folderId: string) {
     .filter((file) => includeAllFilesForMatchedFolder || fileMatchesQuery(file));
 }
 
-type SqlLibraryRow = { type: "folder"; folder: SavedSqlFolder; depth: number } | { type: "file"; file: SavedSqlFile; depth: number };
+type SqlLibraryRow = { type: "folder"; folder: SavedSqlFolder; depth: number; folderIndex: number } | { type: "file"; file: SavedSqlFile; depth: number };
 
 const visibleFolderRows = computed<SqlLibraryRow[]>(() => {
   const rows: SqlLibraryRow[] = [];
+  let folderIndex = 0;
   const appendFolder = (folder: SavedSqlFolder, depth: number) => {
     if (!folderBranchMatchesQuery(folder)) return;
-    rows.push({ type: "folder", folder, depth });
+    rows.push({ type: "folder", folder, depth, folderIndex: folderIndex++ });
     if (!isFolderExpanded(folder.id)) return;
     for (const child of childFolders(folder.id)) {
       appendFolder(child, depth + 1);
@@ -417,6 +418,52 @@ async function openNewQueryInFolder(folder?: SavedSqlFolder) {
   queryStore.openSavedSql(file);
 }
 
+// Batch selection state
+const selectedFileIds = ref<Set<string>>(new Set());
+const selectedFolderIds = ref<Set<string>>(new Set());
+const lastClickedItemIndex = ref<number | null>(null); // Unified index for both folders and files
+
+// Active item state (single selection highlight, like left sidebar)
+const activeItemId = ref<string | null>(null);
+const activeItemType = ref<"file" | "folder" | null>(null);
+
+// Unified item list for selection (folders first, then unfiled files)
+const allSelectableItems = computed(() => {
+  const folders = visibleFolderRows.value.filter((r) => r.type === "folder").map((r) => ({ type: "folder" as const, id: r.folder.id }));
+  const files = visibleFiles.value.map((f) => ({ type: "file" as const, id: f.id }));
+  return [...folders, ...files];
+});
+
+const hasSelection = computed(() => selectedFileIds.value.size > 0 || selectedFolderIds.value.size > 0);
+const selectedCount = computed(() => selectedFileIds.value.size + selectedFolderIds.value.size);
+
+function clearSelection() {
+  selectedFileIds.value = new Set();
+  selectedFolderIds.value = new Set();
+  lastClickedItemIndex.value = null;
+}
+
+function setActiveItem(id: string, type: "file" | "folder") {
+  activeItemId.value = id;
+  activeItemType.value = type;
+}
+
+function isFileSelected(fileId: string): boolean {
+  return selectedFileIds.value.has(fileId);
+}
+
+function isFolderSelected(folderId: string): boolean {
+  return selectedFolderIds.value.has(folderId);
+}
+
+function isFileActive(fileId: string): boolean {
+  return activeItemType.value === "file" && activeItemId.value === fileId;
+}
+
+function isFolderActive(folderId: string): boolean {
+  return activeItemType.value === "folder" && activeItemId.value === folderId;
+}
+
 const renamingTarget = ref<{ type: "folder" | "file"; id: string } | null>(null);
 const renameValue = ref("");
 const renameInputRef = ref<HTMLInputElement | null>(null);
@@ -461,6 +508,7 @@ function cancelRename() {
 
 const deleteTarget = ref<{ type: "folder" | "file"; id: string; name: string } | null>(null);
 const showDeleteConfirm = ref(false);
+const showBatchDeleteConfirm = ref(false);
 
 function confirmDeleteFolder(folder: SavedSqlFolder) {
   deleteTarget.value = { type: "folder", id: folder.id, name: folder.name };
@@ -472,6 +520,11 @@ function confirmDeleteFile(file: SavedSqlFile) {
   showDeleteConfirm.value = true;
 }
 
+function confirmBatchDelete() {
+  if (!hasSelection.value) return;
+  showBatchDeleteConfirm.value = true;
+}
+
 async function executeDelete() {
   if (!deleteTarget.value) return;
   const { type, id } = deleteTarget.value;
@@ -481,6 +534,23 @@ async function executeDelete() {
   deleteTarget.value = null;
 }
 
+async function executeBatchDelete() {
+  const fileIds = Array.from(selectedFileIds.value);
+  const folderIds = Array.from(selectedFolderIds.value);
+
+  // Delete files first, then folders
+  for (const fileId of fileIds) {
+    await savedSqlStore.deleteFile(fileId);
+  }
+  for (const folderId of folderIds) {
+    await savedSqlStore.deleteFolder(folderId);
+  }
+
+  showBatchDeleteConfirm.value = false;
+  clearSelection();
+  toast(t("sqlLibrary.batchDeleteSuccess", { count: fileIds.length + folderIds.length }), 2000);
+}
+
 function openFile(file: SavedSqlFile) {
   if (suppressNextRowClick.value) return;
   queryStore.openSavedSql(file);
@@ -488,11 +558,146 @@ function openFile(file: SavedSqlFile) {
   void savedSqlStore.recordFileUsage(file.id);
 }
 
+function handleFileClick(file: SavedSqlFile, event: MouseEvent) {
+  if (suppressNextRowClick.value) return;
+
+  const isMeta = event.metaKey || event.ctrlKey;
+  const isShift = event.shiftKey;
+
+  // Find current file index in unified list
+  const currentIndex = allSelectableItems.value.findIndex((item) => item.type === "file" && item.id === file.id);
+  if (currentIndex < 0) return;
+
+  if (isMeta) {
+    // Toggle selection
+    event.preventDefault();
+    event.stopPropagation();
+    const next = new Set(selectedFileIds.value);
+    if (next.has(file.id)) {
+      next.delete(file.id);
+    } else {
+      next.add(file.id);
+    }
+    selectedFileIds.value = next;
+    lastClickedItemIndex.value = currentIndex;
+  } else if (isShift) {
+    // Range selection - additive mode (add to existing selection)
+    event.preventDefault();
+    event.stopPropagation();
+
+    const startIndex = lastClickedItemIndex.value ?? 0;
+    const start = Math.min(startIndex, currentIndex);
+    const end = Math.max(startIndex, currentIndex);
+
+    // Add to existing selection (additive mode)
+    const nextFiles = new Set(selectedFileIds.value);
+    const nextFolders = new Set(selectedFolderIds.value);
+    for (let i = start; i <= end; i++) {
+      const item = allSelectableItems.value[i];
+      if (item) {
+        if (item.type === "file") {
+          nextFiles.add(item.id);
+        } else {
+          nextFolders.add(item.id);
+        }
+      }
+    }
+    selectedFileIds.value = nextFiles;
+    selectedFolderIds.value = nextFolders;
+    lastClickedItemIndex.value = currentIndex;
+  } else {
+    // Normal click - open file, clear selection but keep anchor, and set active
+    const hadSelection = hasSelection.value;
+    clearSelection();
+    setActiveItem(file.id, "file");
+    openFile(file);
+    // Set anchor for future shift-click even when not selecting
+    if (!hadSelection) {
+      lastClickedItemIndex.value = currentIndex;
+    }
+  }
+}
+
+function handleFolderClick(folder: SavedSqlFolder, event: MouseEvent) {
+  if (suppressNextRowClick.value) return;
+
+  const isMeta = event.metaKey || event.ctrlKey;
+  const isShift = event.shiftKey;
+
+  // Find current folder index in unified list
+  const currentIndex = allSelectableItems.value.findIndex((item) => item.type === "folder" && item.id === folder.id);
+  if (currentIndex < 0) return;
+
+  if (isMeta) {
+    // Toggle selection
+    event.preventDefault();
+    event.stopPropagation();
+    const next = new Set(selectedFolderIds.value);
+    if (next.has(folder.id)) {
+      next.delete(folder.id);
+    } else {
+      next.add(folder.id);
+    }
+    selectedFolderIds.value = next;
+    lastClickedItemIndex.value = currentIndex;
+  } else if (isShift) {
+    // Range selection - additive mode (add to existing selection)
+    event.preventDefault();
+    event.stopPropagation();
+
+    const startIndex = lastClickedItemIndex.value ?? 0;
+    const start = Math.min(startIndex, currentIndex);
+    const end = Math.max(startIndex, currentIndex);
+
+    // Add to existing selection (additive mode)
+    const nextFiles = new Set(selectedFileIds.value);
+    const nextFolders = new Set(selectedFolderIds.value);
+    for (let i = start; i <= end; i++) {
+      const item = allSelectableItems.value[i];
+      if (item) {
+        if (item.type === "file") {
+          nextFiles.add(item.id);
+        } else {
+          nextFolders.add(item.id);
+        }
+      }
+    }
+    selectedFileIds.value = nextFiles;
+    selectedFolderIds.value = nextFolders;
+    lastClickedItemIndex.value = currentIndex;
+  } else {
+    // Normal click - toggle folder expansion, clear selection but keep anchor, and set active
+    const hadSelection = hasSelection.value;
+    clearSelection();
+    setActiveItem(folder.id, "folder");
+    toggleFolder(folder.id);
+    // Set anchor for future shift-click even when not selecting
+    if (!hadSelection) {
+      lastClickedItemIndex.value = currentIndex;
+    }
+  }
+}
+
 const contextTarget = ref<SavedSqlFolder | SavedSqlFile | "panel" | null>(null);
 
 const contextMenuItems = computed<CtxMenuItem[]>(() => {
   const target = contextTarget.value;
   if (!target) return [];
+
+  // If there's selection, show batch delete option
+  if (hasSelection.value) {
+    return [
+      {
+        label: t("sqlLibrary.batchDelete", { count: selectedCount.value }),
+        action: confirmBatchDelete,
+        icon: Trash2,
+        variant: "destructive",
+      },
+      { label: "", separator: true },
+      { label: t("sqlLibrary.clearSelection"), action: clearSelection, icon: X },
+    ];
+  }
+
   if (target === "panel") {
     return [
       { label: t("savedSql.newFolder"), action: openNewFolderInput, icon: FolderPlus },
@@ -710,6 +915,8 @@ onBeforeUnmount(() => {
 
 function handleDragMouseDown(event: MouseEvent, id: string, type: Extract<DragItemType, "folder" | "file">) {
   if (event.button !== 0) return;
+  // Skip drag when modifier keys are pressed (for selection)
+  if (event.shiftKey || event.metaKey || event.ctrlKey) return;
   const target = event.target as HTMLElement | null;
   if (target?.closest("[data-no-drag='true']")) return;
   pendingDrag = {
@@ -774,6 +981,7 @@ function showDropInside(targetId: string) {
   <div class="h-full flex flex-col overflow-hidden border-l bg-background select-none">
     <div class="h-9 flex items-center gap-1 px-2 border-b shrink-0 bg-muted/20">
       <span class="text-[13px] font-medium">{{ t("sqlLibrary.title") }}</span>
+      <span v-if="hasSelection" class="text-[12px] text-muted-foreground ml-1">({{ selectedCount }})</span>
       <span class="flex-1" />
       <Button variant="ghost" size="icon" class="h-5 w-5" :title="t('savedSql.newFolder')" @click="openNewFolderInput">
         <FolderPlus class="h-3 w-3" />
@@ -810,16 +1018,16 @@ function showDropInside(targetId: string) {
               onContextMenu($event);
             "
           >
-            <div v-for="row in visibleFolderRows" :key="row.type === 'folder' ? row.folder.id : row.file.id" class="mb-0.5">
+            <div v-for="row in visibleFolderRows" :key="row.type === 'folder' ? row.folder.id : row.file.id">
               <div
                 v-if="row.type === 'folder'"
-                class="relative flex items-center gap-1 rounded py-1.5 pr-2 text-[13px] cursor-pointer transition-colors group"
+                class="relative flex items-center gap-1 rounded py-1.5 pr-2 text-[13px] cursor-pointer group"
                 :style="{ paddingLeft: `${8 + row.depth * 16}px` }"
-                :class="[showDropInside(row.folder.id) ? 'ring-1 ring-primary/50 bg-primary/5' : 'hover:bg-accent', isDraggingItem(row.folder.id) ? 'opacity-50' : '']"
+                :class="[showDropInside(row.folder.id) ? 'ring-1 ring-primary/50 bg-primary/5' : isFolderSelected(row.folder.id) ? 'bg-primary/10' : isFolderActive(row.folder.id) ? 'bg-accent' : 'hover:bg-accent', isDraggingItem(row.folder.id) ? 'opacity-50' : '']"
                 @mousedown="handleDragMouseDown($event, row.folder.id, 'folder')"
                 @mousemove="updateDropTarget($event, row.folder.id, 'folder')"
                 @mouseleave="clearDropTarget(row.folder.id)"
-                @click="toggleFolder(row.folder.id)"
+                @click="handleFolderClick(row.folder, $event)"
                 @contextmenu.capture="contextTarget = row.folder"
                 @contextmenu.prevent="
                   contextTarget = row.folder;
@@ -849,13 +1057,13 @@ function showDropInside(targetId: string) {
 
               <div
                 v-else
-                class="relative flex items-center gap-1 rounded py-1.5 pr-2 text-[13px] cursor-pointer transition-colors group"
+                class="relative flex items-center gap-1 rounded py-1.5 pr-2 text-[13px] cursor-pointer group"
                 :style="{ paddingLeft: `${8 + row.depth * 16}px` }"
-                :class="[isDraggingItem(row.file.id) ? 'opacity-50' : 'hover:bg-accent']"
+                :class="[isDraggingItem(row.file.id) ? 'opacity-50' : isFileSelected(row.file.id) ? 'bg-primary/10' : isFileActive(row.file.id) ? 'bg-accent' : 'hover:bg-accent']"
                 @mousedown="handleDragMouseDown($event, row.file.id, 'file')"
                 @mousemove="updateDropTarget($event, row.file.id, 'file')"
                 @mouseleave="clearDropTarget(row.file.id)"
-                @click="openFile(row.file)"
+                @click="handleFileClick(row.file, $event)"
                 @contextmenu.capture="contextTarget = row.file"
                 @contextmenu.prevent="
                   contextTarget = row.file;
@@ -894,12 +1102,12 @@ function showDropInside(targetId: string) {
               <div
                 v-for="file in visibleFiles"
                 :key="file.id"
-                class="relative flex items-center gap-1 rounded px-2 py-1.5 text-[13px] cursor-pointer transition-colors group"
-                :class="[isDraggingItem(file.id) ? 'opacity-50' : 'hover:bg-accent']"
+                class="relative flex items-center gap-1 rounded px-2 py-1.5 text-[13px] cursor-pointer group"
+                :class="[isDraggingItem(file.id) ? 'opacity-50' : isFileSelected(file.id) ? 'bg-primary/10' : 'hover:bg-accent']"
                 @mousedown="handleDragMouseDown($event, file.id, 'file')"
                 @mousemove="updateDropTarget($event, file.id, 'file')"
                 @mouseleave="clearDropTarget(file.id)"
-                @click="openFile(file)"
+                @click="handleFileClick(file, $event)"
                 @contextmenu.capture="contextTarget = file"
                 @contextmenu.prevent="
                   contextTarget = file;
@@ -950,6 +1158,22 @@ function showDropInside(targetId: string) {
         <DialogFooter>
           <Button variant="outline" size="sm" @click="showDeleteConfirm = false">{{ t("dangerDialog.cancel") }}</Button>
           <Button variant="destructive" size="sm" @click="executeDelete">{{ t("dangerDialog.confirm") }}</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+
+    <!-- Batch Delete Confirmation Dialog -->
+    <Dialog :open="showBatchDeleteConfirm" @update:open="(open) => (showBatchDeleteConfirm = open)">
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>{{ t("sqlLibrary.batchDelete") }}</DialogTitle>
+          <DialogDescription>
+            {{ t("sqlLibrary.batchDeleteConfirm", { count: selectedCount }) }}
+          </DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <Button variant="outline" size="sm" @click="showBatchDeleteConfirm = false">{{ t("dangerDialog.cancel") }}</Button>
+          <Button variant="destructive" size="sm" @click="executeBatchDelete">{{ t("dangerDialog.confirm") }}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

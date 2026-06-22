@@ -132,6 +132,10 @@ export default {
     imported: "已匯入 {count} 個 SQL 檔案",
     desktopOnly: "此功能僅桌面版可用",
     noConnection: "目前沒有可用於匯入的連線",
+    batchDelete: "批次刪除",
+    batchDeleteConfirm: "確定要刪除選取的 {count} 項嗎？此操作無法復原。",
+    batchDeleteSuccess: "成功刪除 {count} 項",
+    clearSelection: "清除選取",
   },
 
   connection: {

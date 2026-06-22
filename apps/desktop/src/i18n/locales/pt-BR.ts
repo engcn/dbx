@@ -132,6 +132,10 @@ export default {
     imported: "Importados {count} arquivos SQL",
     desktopOnly: "Este recurso está disponível apenas no desktop",
     noConnection: "Nenhuma conexão disponível para importar",
+    batchDelete: "Exclusão em lote",
+    batchDeleteConfirm: "Tem certeza de que deseja excluir {count} itens selecionados? Esta ação não pode ser desfeita.",
+    batchDeleteSuccess: "{count} itens excluídos com sucesso",
+    clearSelection: "Limpar seleção",
   },
 
   connection: {

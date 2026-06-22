@@ -134,6 +134,10 @@ export default {
     imported: "Imported {count} SQL files",
     desktopOnly: "This feature is only available on desktop",
     noConnection: "No connection is available for import",
+    batchDelete: "Batch Delete",
+    batchDeleteConfirm: "Are you sure you want to delete {count} selected items? This action cannot be undone.",
+    batchDeleteSuccess: "Successfully deleted {count} items",
+    clearSelection: "Clear Selection",
   },
 
   connection: {
